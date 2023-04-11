@@ -2,11 +2,11 @@ use std::thread;
 
 const THRESHOLD: usize = 1234;
 
-pub fn split_work<R, T, F>(input: Vec<T>, handle: F) -> Vec<R>
+pub fn split_work<R, T, F>(mut input: Vec<T>, handle: F) -> Vec<R>
 where
-    R: Sync + Send + Default + Clone,
-    T: Sync + Send + Copy,
-    F: Fn(T) -> R + Sync + Send + Copy,
+    T: Send,
+    R: Send + Default + Clone,
+    F: Fn(T) -> R + Send + Copy,
 {
     if input.len() <= THRESHOLD {
         return input.into_iter().map(|val| handle(val)).collect();
@@ -14,16 +14,25 @@ where
 
     let mut result: Vec<R> = vec![R::default(); input.len()];
 
+    let num_chunks = input.chunks(THRESHOLD).count();
+    let mut input_chunks = Vec::with_capacity(num_chunks);
+
+    for chunk in (1..=num_chunks).rev() {
+        let tail_subvector = input.split_off(THRESHOLD * (chunk - 1));
+        input_chunks.push(tail_subvector);
+    }
+
     thread::scope(|scope| {
         let mut result_chunks = result.chunks_mut(THRESHOLD);
 
-        for input_chunk in input.chunks(THRESHOLD) {
+        for _ in 0..num_chunks {
             let result_chunk = result_chunks
                 .next()
                 .expect("Number of chunks in result vector must be the same as in input vector");
+            let input_chunk = input_chunks.pop().unwrap(); // same expectation as above
 
             scope.spawn(move || {
-                handle_chunk(result_chunk, input_chunk, handle);
+                handle_vec(result_chunk, input_chunk, handle);
             });
         }
     });
@@ -31,13 +40,12 @@ where
     result
 }
 
-fn handle_chunk<R, T, F>(slice: &mut [R], input: &[T], handle: F)
+fn handle_vec<R, T, F>(slice: &mut [R], mut input: Vec<T>, handle: F)
 where
-    T: Copy,
     F: Fn(T) -> R,
 {
-    for (elt, result) in slice.iter_mut().enumerate() {
-        *result = handle(input[elt]);
+    for result in slice.iter_mut() {
+        *result = handle(input.remove(0));
     }
 }
 
