@@ -1,52 +1,55 @@
-use std::thread;
+use std::thread::{self, ScopedJoinHandle};
 
 const THRESHOLD: usize = 1234;
 
-pub fn split_work<R, T, F>(mut input: Vec<T>, handle: F) -> Vec<R>
+pub fn split_work<R, T, F>(mut input: Vec<T>, work: F) -> Vec<R>
 where
     T: Send,
-    R: Send + Default + Clone,
+    R: Send,
     F: Fn(T) -> R + Send + Copy,
 {
     if input.len() <= THRESHOLD {
-        return input.into_iter().map(|val| handle(val)).collect();
+        return handle_vector(input, work);
     }
-
-    let mut result: Vec<R> = vec![R::default(); input.len()];
 
     let num_chunks = input.chunks(THRESHOLD).count();
     let mut input_chunks = Vec::with_capacity(num_chunks);
 
-    for chunk in (1..=num_chunks).rev() {
-        let tail_subvector = input.split_off(THRESHOLD * (chunk - 1));
-        input_chunks.push(tail_subvector);
+    for chunk in (0..num_chunks).rev() {
+        let input_tail_subvector = input.split_off(THRESHOLD * chunk);
+        input_chunks.push(input_tail_subvector);
     }
 
+    let mut output_chunks: Vec<Vec<R>> = Vec::with_capacity(num_chunks);
+
     thread::scope(|scope| {
-        let mut result_chunks = result.chunks_mut(THRESHOLD);
+        let mut output: Vec<ScopedJoinHandle<Vec<R>>> = Vec::with_capacity(num_chunks);
 
         for _ in 0..num_chunks {
-            let result_chunk = result_chunks
-                .next()
-                .expect("Number of chunks in result vector must be the same as in input vector");
-            let input_chunk = input_chunks.pop().unwrap(); // same expectation as above
+            let input_chunk = input_chunks
+                .pop()
+                .expect("Number of chunks in output vector must be the same as in input vector");
 
-            scope.spawn(move || {
-                handle_vec(result_chunk, input_chunk, handle);
-            });
+            output.push(scope.spawn(move || handle_vector(input_chunk, work)));
         }
+
+        output_chunks = output
+            .into_iter()
+            .map(|thread_h| {
+                thread_h.join()
+                    .expect("No ideas yet how to handle thread panic here")
+            })
+            .collect();
     });
 
-    result
+    output_chunks.into_iter().flatten().collect()
 }
 
-fn handle_vec<R, T, F>(slice: &mut [R], mut input: Vec<T>, handle: F)
+fn handle_vector<R, T, F>(vector: Vec<T>, handle: F) -> Vec<R>
 where
     F: Fn(T) -> R,
 {
-    for result in slice.iter_mut() {
-        *result = handle(input.remove(0));
-    }
+    vector.into_iter().map(|val| handle(val)).collect()
 }
 
 #[cfg(test)]
